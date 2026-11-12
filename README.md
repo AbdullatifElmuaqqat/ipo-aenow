@@ -116,5 +116,9 @@ See `evidence/figma-spacex-comparison-v3.md` and `evidence/scorecard-v4.md`.
 4. Is the base-rate-shrinkage verdict a reasonable design, or is there a better simple model for this sample size?
 5. What would make the report more useful to a non-expert?
 
+## Contributors
+- Abdullatif Elmuaqqat: author, design, testing.
+- Claude (Anthropic), via Claude Code: co-developed the script, the walk-forward evaluation and the docs.
+
 ## License
 MIT, see `LICENSE`. Research and education only; not financial advice.
