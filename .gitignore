@@ -1,0 +1,7 @@
+# private: SEC contact, logs, positions, reports
+trader/
+# caches and local files
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

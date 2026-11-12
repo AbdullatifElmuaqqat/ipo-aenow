@@ -1,0 +1,219 @@
+{
+  "lookback_years": 10,
+  "min_mcap_usd": 200000000,
+  "comps_min": 20,
+  "comps_max": 40,
+  "deep_candidates": 80,
+  "matching": "archetype",
+  "archetype_min_pool": 30,
+  "archetypes": {
+    "hyper_min_revenue": 1000000000,
+    "hyper_min_growth": 0.5,
+    "heavy_capex_pct": 0.1,
+    "saas_min_gross_margin": 0.7,
+    "saas_min_nrr": 110,
+    "software_sic": [
+      [
+        7370,
+        7379
+      ]
+    ],
+    "profitable_growth": [
+      0.15,
+      0.4
+    ],
+    "consumer_sic": [
+      [
+        2000,
+        2399
+      ],
+      [
+        3570,
+        3579
+      ],
+      [
+        3600,
+        3699
+      ],
+      [
+        3710,
+        3716
+      ],
+      [
+        3860,
+        3861
+      ],
+      [
+        3940,
+        3949
+      ],
+      [
+        4100,
+        4799
+      ],
+      [
+        5200,
+        5999
+      ],
+      [
+        7000,
+        7299
+      ],
+      [
+        7800,
+        7999
+      ]
+    ]
+  },
+  "knn_weights": {
+    "log_rev": 1.0,
+    "growth": 1.0,
+    "fcf_margin": 1.0,
+    "float_pct": 1.0
+  },
+  "knn_min_features": 3,
+  "weights_archetype": {
+    "business": 0.2,
+    "knn": 0.8
+  },
+  "weights": {
+    "business": 0.5,
+    "situation": 0.5
+  },
+  "business": {
+    "sic4_bonus": 30,
+    "sic3_bonus": 15,
+    "text": 70
+  },
+  "situation_weights": {
+    "log_rev": 1.0,
+    "growth": 1.5,
+    "gross_margin": 1.0,
+    "op_margin": 1.0,
+    "profitable": 1.0,
+    "log_mcap": 1.0,
+    "float_pct": 0.7,
+    "secondary_pct": 0.5,
+    "range_rev": 1.0,
+    "price_vs_range": 1.0,
+    "vc_backed": 0.3,
+    "vix": 0.8,
+    "ipo_etf_20d": 0.8,
+    "sector_20d": 0.6,
+    "nasdaq_20d": 0.6,
+    "tnx_chg_3m": 0.5,
+    "ipos_month": 0.5
+  },
+  "pricing": {
+    "k": 30,
+    "simulations": 2000,
+    "bootstrap": 1000,
+    "min_neighbors": 15,
+    "weights": {
+      "range_width": 1.0,
+      "spx_20d": 0.7,
+      "nasdaq_20d": 0.7,
+      "sector_20d": 0.7,
+      "float_pct": 1.0,
+      "bank_margin": 0.8,
+      "bank_d30": 0.5
+    },
+    "base_alpha": 0.0,
+    "method": "revision",
+    "_why": "2020-25 walk-forward: base rate by range revision beat the plain base rate in 6 of 6 years (log -1.105 vs -1.353)"
+  },
+  "base_rate": {
+    "months": 36
+  },
+  "valuation": {
+    "rich_pct": 0.75,
+    "cheap_pct": 0.25,
+    "min_n": 8
+  },
+  "verdict": {
+    "flip_edge": 0.02,
+    "hold_edge": 0.05,
+    "hit_fav": 0.55,
+    "hit_unf": 0.45,
+    "min_n": 8,
+    "method": "shrunk",
+    "v1_dh": 0.1,
+    "conf_bands": [
+      1.0,
+      1.0
+    ],
+    "by_horizon": {
+      "d5": {
+        "shrink_k": 40,
+        "delta": 0.05,
+        "tau_years": null
+      },
+      "d180": {
+        "method": "base",
+        "delta": 0.1,
+        "shrink_k": 10,
+        "tau_years": 1.0,
+        "_why": "2020-25 walk-forward (404 IPOs): comparables made day-180 worse (Brier 0.2427 vs 0.2349 for the base rate)"
+      }
+    }
+  },
+  "reference": {
+    "min_n": 15,
+    "weak_min_n": 10,
+    "bins": [
+      -1.0,
+      0.0,
+      0.1,
+      0.25,
+      0.5,
+      1.0
+    ],
+    "thresholds": [
+      0.0,
+      0.05,
+      0.1,
+      0.15,
+      0.2,
+      0.25,
+      0.3,
+      0.35,
+      0.4,
+      0.45,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0
+    ]
+  },
+  "bootstrap": {
+    "resamples": 2000,
+    "seed": 19
+  },
+  "backtest": {
+    "from_months": 24,
+    "to_months": 6,
+    "limit": 25
+  },
+  "signals": {
+    "enabled": true,
+    "anchor": false,
+    "k": 50,
+    "train_months": 120,
+    "use": [
+      "priced",
+      "ipo_etf",
+      "vix",
+      "open"
+    ],
+    "horizons": [
+      "d1",
+      "d3",
+      "d5",
+      "d30",
+      "d90",
+      "d180"
+    ]
+  }
+}
