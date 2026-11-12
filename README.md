@@ -1,6 +1,6 @@
 # ipo-aenow — an IPO research skill that proves its claims
 
-**Version 4** (2026-11). One place to understand the tool and review it; questions for reviewers are at the end.
+**Version 4.0.1** (2026-11). One place to understand the tool and review it; questions for reviewers are at the end.
 
 ## In one paragraph
 ipo-aenow is a Claude Code skill (a Python script plus instructions) that researches a US IPO from the company's
@@ -11,13 +11,40 @@ fair** (at the IPO price and at the opening price), a simulation of outcomes, an
 (flip candidate / hold candidate / skip / no clear lean). It is research, not financial advice, and it says how
 close its rules are to the plain base rate.
 
-## Quick start
-1. Copy `skill/` into your project as `.claude/skills/ipo-aenow/`.
-2. Create `trader/config.json` in the project with your SEC contact (SEC requires one):
-   `{"sec_user_agent": "Your Name you@example.com"}`
-3. In Claude Code: `/ipo-aenow TICKER`, or run `python .claude/skills/ipo-aenow/scripts/ipo.py analyze TICKER --summary --save`.
-4. Check it: `python .claude/skills/ipo-aenow/scripts/ipo.py --selftest` and `... regress`.
-Python 3.10+, standard library only. The first run downloads and caches about 10 years of SEC filings (20-40 minutes).
+## Install
+You need Claude Code and Python 3.10+ (standard library only, nothing to `pip install`).
+
+**1. Copy the skill into your project.** Only the `skill/` folder, renamed to `ipo-aenow`:
+```bash
+git clone https://github.com/AbdullatifElmuaqqat/ipo-aenow.git
+mkdir -p my-project/.claude/skills
+cp -r ipo-aenow/skill my-project/.claude/skills/ipo-aenow
+```
+The result must be `my-project/.claude/skills/ipo-aenow/SKILL.md` (not `.../ipo-aenow/skill/SKILL.md`).
+
+**2. Add your SEC contact.** SEC EDGAR refuses requests without a name and email in the User-Agent header.
+Create `my-project/trader/config.json`:
+```json
+{"sec_user_agent": "First Last first.last@gmail.com"}
+```
+- Name, a space, then the email, all in one string. Examples: `"Sam Lee samlee92@gmail.com"`,
+  `"Maria Garcia maria.garcia+sec@outlook.com"` (a `+sec` alias keeps it apart from your main inbox).
+- Use a real address you own. Placeholders with `example.com`, or a string without `@`, are refused.
+- It is sent only to sec.gov, never to Yahoo or anywhere else.
+- Installed for all projects instead (`~/.claude/skills/ipo-aenow/`)? Then the file goes in `~/trader/config.json`.
+- Or skip the file and set an environment variable: `SEC_USER_AGENT="First Last first.last@gmail.com"`.
+
+If you see `ipo.py: SEC needs a contact. Create <path> ...`, the file is missing or refused; the message prints
+the exact path it looked in.
+
+**3. Check it** (from `my-project/`; on macOS / Linux use `python3`):
+```bash
+python .claude/skills/ipo-aenow/scripts/ipo.py --selftest
+```
+
+**4. Use it.** In Claude Code, opened in `my-project/`: `/ipo-aenow FIG`, or ask "should I flip the Figma IPO?".
+Or run it directly: `python .claude/skills/ipo-aenow/scripts/ipo.py analyze FIG --summary --save`.
+The first run downloads and caches about 10 years of SEC filings (20-40 minutes); later runs take 1-4 minutes.
 
 ## Security
 - HTTPS GET only, to SEC EDGAR (`www.sec.gov`, `data.sec.gov`, `efts.sec.gov`) and Yahoo Finance

@@ -5,6 +5,7 @@ Day-to-day work happens in the dev copy, `Trading/.claude/skills/ipo-aenow/` (th
 
 | version | date | what changed | checks |
 |---|---|---|---|
+| v4.0.1 | 2026-11-11 | Install guide with SEC contact examples; the missing-contact error prints the exact config path; README example no longer uses the refused example.com; no prediction change | selftest PASS, regress PASS, fresh-clone install check |
 | v4 | 2026-11-11 | Renamed ipo-analyst -> ipo-aenow; network allowlist; S-1 parser, pricing by range revision, valuation at the open, hold = base rate, outcome simulation, five-question summary report, takeover prices, replay modes, regression set | selftest PASS, regress PASS, walk-forward 2020-25, Figma / SpaceX replays |
 
 ## Rules for updating PROD

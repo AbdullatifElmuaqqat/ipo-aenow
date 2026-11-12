@@ -34,7 +34,8 @@ A full `analyze` takes 1-4 minutes when the cache is warm (the decision table re
 
 Archetype matching reads the cover page of every US IPO in the last 10 years the first time (often
 20-40 minutes); run it in the background and say so. Later runs use the 30-day cache. SEC needs
-`sec_user_agent` in `trader/config.json`.
+`sec_user_agent` in `trader/config.json`. If the script stops asking for an SEC contact, ask the user for their
+name and email and write that file at the path the error prints; never invent one.
 
 ## Steps
 

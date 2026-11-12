@@ -86,7 +86,9 @@ def sec_ua():
         except (OSError, ValueError):
             ua = ""
     if not ua or "example.com" in ua or "@" not in ua:
-        sys.exit("ipo.py: set sec_user_agent in trader/config.json (\"Name you@domain\") or SEC_USER_AGENT; SEC refuses anonymous requests.")
+        sys.exit(f"ipo.py: SEC needs a contact. Create {TRADER / 'config.json'} with "
+                 "{\"sec_user_agent\": \"First Last first.last@gmail.com\"} using your real name and email (example.com is refused), "
+                 "or set SEC_USER_AGENT.")
     _ua = ua
     return ua
 
