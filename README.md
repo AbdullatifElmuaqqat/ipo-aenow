@@ -1,6 +1,6 @@
 # ipo-aenow — an IPO research skill that proves its claims
 
-**Version 4.1** (2026-11). One place to understand the tool and review it; questions for reviewers are at the end.
+**Version 4.2** (2026-11). One place to understand the tool and review it; questions for reviewers are at the end.
 
 ## In one paragraph
 ipo-aenow is a Claude Code skill (a Python script plus instructions) that researches a US IPO from the company's
