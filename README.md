@@ -1,6 +1,6 @@
 # ipo-aenow — an IPO research skill that proves its claims
 
-**Version 4.0.1** (2026-11). One place to understand the tool and review it; questions for reviewers are at the end.
+**Version 4.1** (2026-11). One place to understand the tool and review it; questions for reviewers are at the end.
 
 ## In one paragraph
 ipo-aenow is a Claude Code skill (a Python script plus instructions) that researches a US IPO from the company's
@@ -30,7 +30,8 @@ Create `my-project/trader/config.json`:
 - Name, a space, then the email, all in one string. Examples: `"Sam Lee samlee92@gmail.com"`,
   `"Maria Garcia maria.garcia+sec@outlook.com"` (a `+sec` alias keeps it apart from your main inbox).
 - Use a real address you own. Placeholders with `example.com`, or a string without `@`, are refused.
-- It is sent only to sec.gov, never to Yahoo or anywhere else.
+- It is sent only to sec.gov, never to Yahoo or anywhere else. A run makes only a handful of SEC requests (the IPO
+  you ask about); everything older comes from the history file.
 - Installed for all projects instead (`~/.claude/skills/ipo-aenow/`)? Then the file goes in `~/trader/config.json`.
 - Or skip the file and set an environment variable: `SEC_USER_AGENT="First Last first.last@gmail.com"`.
 
@@ -44,15 +45,23 @@ python .claude/skills/ipo-aenow/scripts/ipo.py --selftest
 
 **4. Use it.** In Claude Code, opened in `my-project/`: `/ipo-aenow FIG`, or ask "should I flip the Figma IPO?".
 Or run it directly: `python .claude/skills/ipo-aenow/scripts/ipo.py analyze FIG --summary --save`.
-The first run downloads and caches about 10 years of SEC filings (20-40 minutes); later runs take 1-4 minutes.
+The first run downloads the IPO history file once (about 9 MB, checked by SHA-256) instead of reading 10 years of
+SEC filings: about 2 minutes instead of 20-40 (measured: a Figma replay from an empty cache took 114 s, with the
+same result as a full live run). Most of that time is Yahoo prices, which are always read live.
 
 ## Security
-- HTTPS GET only, to SEC EDGAR (`www.sec.gov`, `data.sec.gov`, `efts.sec.gov`) and Yahoo Finance
-  (`query1/2.finance.yahoo.com`); any other host is refused in code. No code is downloaded or run.
+- HTTPS GET only, to SEC EDGAR (`www.sec.gov`, `data.sec.gov`, `efts.sec.gov`), Yahoo Finance
+  (`query1/2.finance.yahoo.com`) and, for the history file, this repo's GitHub release (`github.com`,
+  `objects.githubusercontent.com`, `release-assets.githubusercontent.com`); any other host, including on a redirect,
+  is refused in code. No code is downloaded or run.
+- The history file is plain JSON (parsed SEC records of past IPOs and their XBRL financial facts, trimmed to the
+  fields used; no Yahoo prices, which Yahoo's terms do not allow us to share), used only if its SHA-256 matches the one pinned in
+  `skill/ipo-config.json`; otherwise it is ignored and the script reads SEC directly. Maintainers rebuild it with
+  `ipo.py bundle`.
 - The only personal data sent is the SEC contact in the User-Agent header, to sec.gov only (SEC's own rule).
 - Writes only its cache (`%LOCALAPPDATA%/ipo-analyst/cache`) and `trader/` in the project. `trader/` is in `.gitignore`.
 - Yahoo Finance endpoints are unofficial; use them under Yahoo's terms. SEC asks for no more than 10 requests a
-  second; the script stays under 5.
+  second; the script stays under 8 across all of sec.gov.
 
 ## What one run produces
 1. A **summary report** (~700 words, also the chat reply): verdict tags, a 30-second answer, five questions
@@ -103,6 +112,14 @@ See `evidence/figma-spacex-comparison-v3.md` and `evidence/scorecard-v4.md`.
 3. Hype is not measured (news volume / tone, search interest, social media, retail demand); order-book coverage is logged only.
 4. About a third of look-alikes have no price history (takeover prices fill only their final value).
 5. One 3,000-line script; the full report is long.
+
+## Updating the history file (maintainers)
+The history file is rebuilt from SEC and published as a GitHub release; users pick it up when they pull the repo.
+1. `python .claude/skills/ipo-aenow/scripts/ipo.py bundle` (needs your own SEC contact; minutes when the cache is
+   warm, longer after a month). It writes `trader/ipo-history.json.gz` and pins its SHA-256 in `ipo-config.json`.
+2. Run the `gh release create history-<date> ...` command it prints.
+3. Copy the new `ipo-config.json` into `skill/`, commit and push. IPOs newer than the file are still read live, so a
+   stale file is slower, never wrong.
 
 ## Files
 - `skill/` the skill as shipped (install as `.claude/skills/ipo-aenow/`): `SKILL.md` (instructions), `README.md`, `ipo-config.json`, `scripts/ipo.py`, `tests/regression.json`.

@@ -9,9 +9,11 @@ an evidence-based lean. It never places, sizes or approves an order.
   python ipo.py day1    TICKER
   python ipo.py backtest [--limit N | --all]
   python ipo.py clean
+  python ipo.py bundle          (maintainer: rebuild the shipped IPO history file)
   python ipo.py --selftest
 """
 import argparse
+import copy
 import gzip
 import hashlib
 import html
@@ -23,6 +25,7 @@ import re
 import sys
 import threading
 import time
+import zlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,8 +42,11 @@ BACKTEST_FILE = TRADER / "state" / "ipo-backtest.json"
 REPORTS = TRADER / "reports"
 CACHE = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "ipo-analyst" / "cache"
 REC = CACHE / "rec"
+HIST_DIR = CACHE.parent / "history"    # the shipped history file; outside CACHE so the 30-day prune keeps it
 CACHE_DAYS = 30
 MIN_GAP = 0.22                         # seconds between requests to one host (< 5 a second)
+MIN_GAP_SEC = 0.13                     # all of sec.gov together: ~7.7 a second, under SEC's 10
+HISTORY_REPO = "AbdullatifElmuaqqat/ipo-aenow"
 EFTS = "https://efts.sec.gov/LATEST/search-index?"
 TODAY = date.today()
 
@@ -64,9 +70,13 @@ _rate_lock = threading.Lock()
 
 
 def _throttle(host):
+    if host.endswith(".sec.gov"):            # SEC's limit is for all of sec.gov together
+        host, gap = "sec.gov", MIN_GAP_SEC
+    else:
+        gap = MIN_GAP
     with _rate_lock:
         t = max(time.time(), _next.get(host, 0.0))
-        _next[host] = t + MIN_GAP
+        _next[host] = t + gap
     d = t - time.time()
     if d > 0:
         time.sleep(d)
@@ -93,17 +103,33 @@ def sec_ua():
     return ua
 
 
-ALLOWED_HOSTS = ("www.sec.gov", "data.sec.gov", "efts.sec.gov", "query1.finance.yahoo.com", "query2.finance.yahoo.com")
+ALLOWED_HOSTS = ("www.sec.gov", "data.sec.gov", "efts.sec.gov", "query1.finance.yahoo.com", "query2.finance.yahoo.com",
+                 "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")   # last 3: history file
+
+
+def _check_url(url):
+    u = urllib.parse.urlparse(url)
+    host = u.netloc.lower()
+    if u.scheme != "https" or host not in ALLOWED_HOSTS:
+        raise ValueError(f"ipo.py: refusing to fetch {u.scheme}://{host} (only SEC EDGAR, Yahoo Finance and this skill's GitHub release over HTTPS)")
+    return host
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect must stay on the allowlist too."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_SafeRedirect)
 
 
 def http_get(url, *, sec=False, max_bytes=None, ttl=CACHE_DAYS * 86400, cache=True):
     """GET with a polite rate limit, retries and a gzip cache outside OneDrive.
     Big filings are read only up to max_bytes and not cached raw (their parsed record is).
     Only HTTPS to SEC EDGAR and Yahoo Finance; the SEC contact (User-Agent SEC requires) goes to sec.gov only."""
-    u = urllib.parse.urlparse(url)
-    host = u.netloc.lower()
-    if u.scheme != "https" or host not in ALLOWED_HOSTS:
-        raise ValueError(f"ipo.py: refusing to fetch {u.scheme}://{host} (only SEC EDGAR and Yahoo Finance over HTTPS)")
+    host = _check_url(url)
     sec = sec and host.endswith(".sec.gov")
     key = hashlib.sha1(f"{url}|{max_bytes}".encode()).hexdigest()
     path = CACHE / (key + ".gz")
@@ -115,7 +141,7 @@ def http_get(url, *, sec=False, max_bytes=None, ttl=CACHE_DAYS * 86400, cache=Tr
     for attempt in range(4):
         _throttle(host)
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as r:
+            with _opener.open(urllib.request.Request(url, headers=headers), timeout=60) as r:
                 data = r.read(max_bytes) if max_bytes else r.read()
             break
         except urllib.error.HTTPError as e:
@@ -135,14 +161,53 @@ def get_json(url, **kw):
     return json.loads(http_get(url, **kw))
 
 
+# ---------------------------------------------------------------- shipped history file
+
+_hist = None
+_hist_lock = threading.Lock()
+
+
+def history():
+    """Past IPOs' parsed records and IPO lists, shipped as one GitHub Release file so a first run skips thousands of
+    SEC downloads. Pinned by SHA-256 in ipo-config.json; missing, unpinned or not matching -> {} (live SEC as before)."""
+    global _hist
+    with _hist_lock:
+        if _hist is None:
+            _hist = load_history(cfg().get("history") or {})
+    return _hist
+
+
+def load_history(h):
+    sha, url = (h.get("sha256") or "").lower(), h.get("url") or ""
+    if not sha or not url:
+        return {}
+    p = HIST_DIR / f"{sha[:16]}.json.gz"
+    try:
+        data = p.read_bytes() if p.exists() else b""
+        if hashlib.sha256(data).hexdigest() != sha:
+            print("ipo.py: downloading the IPO history file (one time, a few MB)...", file=sys.stderr)
+            _check_url(url)
+            with _opener.open(urllib.request.Request(url, headers={"User-Agent": "ipo-aenow"}), timeout=120) as r:
+                data = r.read(200_000_000)
+            if hashlib.sha256(data).hexdigest() != sha:
+                raise ValueError("SHA-256 does not match ipo-config.json; file ignored")
+            HIST_DIR.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        return json.loads(gzip.decompress(data))
+    except Exception as e:  # noqa: BLE001 - no history file just means the slow live path
+        fail("IPO history file", e)
+        return {}
+
+
 def rec_get(name):
     p = REC / (name + ".json")
     if p.exists() and time.time() - p.stat().st_mtime < CACHE_DAYS * 86400:
         try:
             return json.loads(p.read_text(encoding="utf-8"))
         except ValueError:
-            return None
-    return None
+            pass
+    got = history().get("rec", {}).get(name)
+    return copy.deepcopy(got) if got is not None else None   # callers change records in place
 
 
 def rec_put(name, obj):
@@ -224,37 +289,47 @@ def _display(name):
     return re.sub(r"\s*\([^()]*\)", "", name).strip(), tick
 
 
+def quarter_rows(qs, qe):
+    """Every 424B4 filed qs..qe that says 'initial public offering price' (all of them, first-per-company is later).
+    A full quarter shipped in the history file is read from it."""
+    got = history().get("quarters", {}).get(f"{qs}|{qe}")
+    if got is not None:
+        return copy.deepcopy(got)
+    ttl = CACHE_DAYS * 86400 if qe < TODAY - timedelta(35) else 86400
+    rows, frm = [], 0
+    while True:
+        try:
+            d = efts({"q": '"initial public offering price"', "forms": "424B4", "dateRange": "custom",
+                      "startdt": qs.isoformat(), "enddt": qe.isoformat(), "from": frm}, ttl)
+            hits = d["hits"]["hits"]
+            total = d["hits"]["total"]["value"]
+        except Exception as e:               # noqa: BLE001 - a failed page is reported, not fatal
+            fail("SEC full-text search", e)
+            break
+        for h in hits:
+            s = h["_source"]
+            adsh, fn = h["_id"].split(":", 1)
+            if not s.get("ciks"):
+                continue
+            cik = int(s["ciks"][0])
+            name, tick = _display((s.get("display_names") or [""])[0])
+            url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{adsh.replace('-', '')}/{fn}"
+            rows.append({"cik": cik, "name": name, "ticker": tick, "sic": (s.get("sics") or [""])[0] or "",
+                         "filed": s.get("file_date"), "adsh": adsh, "url": url})
+        frm += len(hits)
+        if not hits or frm >= total:
+            break
+    return rows
+
+
 def universe(start, end):
     """Every 424B4 that says 'initial public offering price', first one per company."""
     out = {}
     for qs, qe in _quarters(start, end):
-        ttl = CACHE_DAYS * 86400 if qe < TODAY - timedelta(35) else 86400
-        frm = 0
-        while True:
-            try:
-                d = efts({"q": '"initial public offering price"', "forms": "424B4", "dateRange": "custom",
-                          "startdt": qs.isoformat(), "enddt": qe.isoformat(), "from": frm}, ttl)
-                hits = d["hits"]["hits"]
-                total = d["hits"]["total"]["value"]
-            except Exception as e:               # noqa: BLE001 - a failed page is reported, not fatal
-                fail("SEC full-text search", e)
-                break
-            for h in hits:
-                s = h["_source"]
-                adsh, fn = h["_id"].split(":", 1)
-                if not s.get("ciks"):
-                    continue
-                cik = int(s["ciks"][0])
-                name, tick = _display((s.get("display_names") or [""])[0])
-                filed = s.get("file_date")
-                sic = (s.get("sics") or [""])[0] or ""
-                url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{adsh.replace('-', '')}/{fn}"
-                row = {"cik": cik, "name": name, "ticker": tick, "sic": sic, "filed": filed, "adsh": adsh, "url": url}
-                if cik not in out or filed < out[cik]["filed"]:
-                    out[cik] = row
-            frm += len(hits)
-            if not hits or frm >= total:
-                break
+        for row in quarter_rows(qs, qe):
+            cik, filed = row["cik"], row["filed"]
+            if cik not in out or filed < out[cik]["filed"]:
+                out[cik] = row
     rows = [r for r in out.values() if r["sic"] != "6770" and not SPAC_RE.search(r["name"])]
     return sorted(rows, key=lambda r: r["filed"])
 
@@ -512,6 +587,33 @@ REV = ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "Sales
        "RevenueFromContractWithCustomerIncludingAssessedTax", "Revenue"]
 
 
+FACT_NAMES = REV + ["GrossProfit", "OperatingIncomeLoss", "NetCashProvidedByUsedInOperatingActivities",
+                    "PaymentsToAcquirePropertyPlantAndEquipment", "CashAndCashEquivalentsAtCarryingValue",
+                    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "LongTermDebtNoncurrent", "LongTermDebt"]
+
+
+def trim_facts(d):
+    """Only the XBRL facts _fundamentals reads: {"g": {name: {unit: [facts]}}, "shares": [facts]}."""
+    facts = d.get("facts", {})
+    g = facts.get("us-gaap") or facts.get("ifrs-full") or {}
+    keep = lambda fs: [{k: f[k] for k in ("start", "end", "val", "filed") if k in f} for f in fs]  # noqa: E731
+    return {"g": {nm: {u: keep(v) for u, v in g[nm].get("units", {}).items()} for nm in FACT_NAMES if nm in g},
+            "shares": keep(facts.get("dei", {}).get("EntityCommonStockSharesOutstanding", {}).get("units", {}).get("shares", []))}
+
+
+def company_facts(cik, live=False):
+    """A company's trimmed XBRL facts, or None when SEC has none. Past IPOs come from the history file."""
+    hf = history().get("facts", {})
+    if not live and str(cik) in hf:
+        return hf[str(cik)]                    # read only, never changed in place
+    try:
+        return trim_facts(get_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json", sec=True))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
 def fundamentals(cik, before, grace=0, known_by=None, lag_days=0):
     """grace: if no period ends before the IPO, accept one ending up to `grace` days after it
     (flagged period_after_ipo). Used for comparables only, never for a backtest target.
@@ -532,14 +634,10 @@ def _fundamentals(cik, before, known_by=None, lag_days=0):
     longest year-to-date period with a same-length period a year earlier. Flows are annualized.
     Values come from filings made after the IPO (SEC's XBRL API has no S-1 facts), so the periods
     are pre-IPO but the filing dates are later."""
-    try:
-        d = get_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json", sec=True)
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return {}
-        raise
-    facts = d.get("facts", {})
-    g = facts.get("us-gaap") or facts.get("ifrs-full") or {}
+    cf = company_facts(cik)
+    if cf is None:
+        return {}
+    g = cf["g"]
     last_end = before - timedelta(lag_days)
     seen = lambda f: not known_by or not f.get("filed") or d_(f["filed"]) < known_by  # noqa: E731
 
@@ -616,7 +714,7 @@ def _fundamentals(cik, before, known_by=None, lag_days=0):
                 out[key] = v
     out["cash"] = instant(["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"])
     out["debt"] = instant(["LongTermDebtNoncurrent", "LongTermDebt"])
-    so = facts.get("dei", {}).get("EntityCommonStockSharesOutstanding", {}).get("units", {}).get("shares", [])
+    so = cf["shares"]
     after = [f for f in so if d_(f["filed"]) >= before - timedelta(5) and seen(f)]
     if after:
         first = min(f["filed"] for f in after)
@@ -657,7 +755,8 @@ def yahoo_daily(sym):
         if sym in _yc:
             return _yc[sym]
     p2 = int(datetime.combine(TODAY + timedelta(2), datetime.min.time(), timezone.utc).timestamp())
-    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}"
+    host = f"query{zlib.crc32(sym.encode()) % 2 + 1}.finance.yahoo.com"     # spread over Yahoo's two hosts
+    url = (f"https://{host}/v8/finance/chart/{urllib.parse.quote(sym)}"
            f"?period1=0&period2={p2}&interval=1d&events=split")
     try:
         r = get_json(url, ttl=12 * 3600)["chart"]["result"][0]
@@ -683,6 +782,17 @@ def yahoo_daily(sym):
     with _yc_lock:
         _yc[sym] = out
     return out
+
+
+def yahoo_many(syms):
+    """Fetch many tickers' bars in parallel into yahoo_daily's memory cache (each host keeps its own rate limit)."""
+    def one(sym):
+        try:
+            yahoo_daily(sym)
+        except Exception:  # noqa: BLE001 - the caller's own yahoo_daily call reports it
+            pass
+    with ThreadPoolExecutor(6) as ex:
+        list(ex.map(one, sorted({s for s in syms if s})))
 
 
 def split_factor(y, after):
@@ -1782,10 +1892,12 @@ def base_rate_recs(uni, ref, conf, cut=True, months=None):
     out = []
     for r in recs:
         ft, c = d_(r["first_trade"]), r.get("cover") or {}
-        if not (ft and ft < ref and r.get("ticker") and c.get("price") and not c.get("units") and (r.get("mcap") or 0) >= conf["min_mcap_usd"]):
-            continue
+        if ft and ft < ref and r.get("ticker") and c.get("price") and not c.get("units") and (r.get("mcap") or 0) >= conf["min_mcap_usd"]:
+            out.append(r)
+    yahoo_many(r["ticker"] for r in out)
+    for r in out:
+        ft, c = d_(r["first_trade"]), r["cover"]
         r["out"] = outcomes(yahoo_daily(r["ticker"]), c["price"], ft, cutoff=ref if cut else None)
-        out.append(r)
     with ThreadPoolExecutor(4) as ex:
         paths = list(ex.map(range_path, out))
     for r, rp in zip(out, paths):
@@ -1857,6 +1969,7 @@ def build_pool(target, ref, conf, log=print, cutoff=True):
     with ThreadPoolExecutor(4) as ex:
         deep = list(ex.map(stage_b, pre))
     deep = [r for r in deep if r.get("mcap") is None or r["mcap"] >= conf["min_mcap_usd"]]
+    yahoo_many(r.get("ticker") for r in deep if r.get("first_trade"))
     for r in deep:
         ft = d_(r["first_trade"])
         y = yahoo_daily(r["ticker"]) if r.get("ticker") and ft else None
@@ -3060,6 +3173,64 @@ def render_extras(res, TK=None):
     return L
 
 
+# ---------------------------------------------------------------- history file (maintainer)
+
+HISTORY_START = date(2013, 1, 1)
+
+
+def _facts_or_old(cik):
+    try:
+        return company_facts(cik, live=True)
+    except Exception as e:  # noqa: BLE001 - keep the last good copy rather than ship a gap
+        fail("SEC XBRL companyfacts", e)
+        return history().get("facts", {}).get(str(cik))
+
+
+def build_history(log=print):
+    """ipo.py bundle: refresh every past IPO's records, pack them with the full quarters' IPO lists into
+    trader/ipo-history.json.gz, pin its SHA-256 in ipo-config.json and print the command that publishes it."""
+    quarters = {}
+    for qs, qe in _quarters(HISTORY_START, TODAY - timedelta(36)):
+        nxt = qe + timedelta(1)
+        if nxt.day == 1 and nxt.month in (1, 4, 7, 10):           # full quarters only; later ones stay live
+            quarters[f"{qs}|{qe}"] = quarter_rows(qs, qe)
+    uni = universe(HISTORY_START, TODAY)
+    log(f"{len(uni)} US IPOs since {HISTORY_START}; refreshing their records (cached ones are instant)...")
+    with ThreadPoolExecutor(4) as ex:
+        recs = list(ex.map(stage_a, uni))
+        list(ex.map(range_path, [r for r in recs if (r.get("cover") or {}).get("price")]))
+    log("Reading every IPO company's XBRL facts (trimmed to the fields used)...")
+    with ThreadPoolExecutor(4) as ex:
+        facts = dict(zip((str(u["cik"]) for u in uni), ex.map(lambda u: _facts_or_old(u["cik"]), uni)))
+    rec = dict(history().get("rec", {}))                       # keep records this machine only had from the old file
+    for f in REC.glob("*.json"):
+        if time.time() - f.stat().st_mtime < CACHE_DAYS * 86400:
+            try:
+                rec[f.stem] = json.loads(f.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+    rec = dict(sorted(rec.items()))
+    data = gzip.compress(json.dumps({"v": 2, "built": iso(TODAY), "quarters": quarters, "facts": facts, "rec": rec},
+                                    separators=(",", ":")).encode(), mtime=0)
+    sha = hashlib.sha256(data).hexdigest()
+    out = TRADER / "ipo-history.json.gz"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    HIST_DIR.mkdir(parents=True, exist_ok=True)
+    (HIST_DIR / f"{sha[:16]}.json.gz").write_bytes(data)
+    tag = f"history-{TODAY}"
+    conf = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    conf["history"] = {"url": f"https://github.com/{HISTORY_REPO}/releases/download/{tag}/ipo-history.json.gz",
+                       "sha256": sha, "built": iso(TODAY)}
+    CONFIG_FILE.write_text(json.dumps(conf, indent=2) + "\n", encoding="utf-8", newline="\n")
+    log(f"Wrote {out} ({len(data) / 1e6:.1f} MB, {len(rec)} records, {len(facts)} companies' facts, {len(quarters)} quarters)")
+    log(f"SHA-256 {sha} pinned in {CONFIG_FILE}")
+    log("Publish it, then release the skill with the new ipo-config.json:")
+    log(f'  gh release create {tag} "{out}" --repo {HISTORY_REPO} --title "IPO history {TODAY}" '
+        f'--notes "Parsed SEC records of US IPOs {HISTORY_START} to {TODAY}. SHA-256 {sha}"')
+    return sha
+
+
 # ---------------------------------------------------------------- selftest (offline)
 
 def selftest():
@@ -3110,7 +3281,41 @@ def selftest():
                       "We have granted the underwriters an option to purchase up to 1,875,000 additional shares. Goldman Sachs & Co. LLC Morgan Stanley J.P. Morgan")
     assert cov["price"] == 21.0 and cov["offered"] == 12_500_000 and cov["greenshoe"] == 1_875_000
     assert cov["banks"][:2] == ["Goldman Sachs", "Morgan Stanley"]
-    # network allowlist: only SEC EDGAR and Yahoo Finance over HTTPS
+    # history file: a record read from it is a copy; a file that does not match its pin is refused; quarters come from it
+    global _hist
+    saved = _hist
+    try:
+        _hist = {"rec": {"selftest-0-A": {"x": 1}}, "quarters": {"2020-01-01|2020-03-31": [{"cik": 7, "filed": "2020-02-03"}]}}
+        r = rec_get("selftest-0-A")
+        r["x"] = 2
+        assert rec_get("selftest-0-A") == {"x": 1}
+        assert quarter_rows(date(2020, 1, 1), date(2020, 3, 31)) == [{"cik": 7, "filed": "2020-02-03"}]
+    finally:
+        _hist = saved
+    fx = {"facts": {"us-gaap": {"Revenues": {"units": {"EUR": [{"start": "2024-01-01", "end": "2024-12-31", "val": 5, "filed": "2025-03-01", "form": "10-K"}],
+                                                       "USD": []}}, "Goodwill": {"units": {"USD": []}}},
+                    "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-02-01", "val": 9, "filed": "2025-03-01", "fy": 2024}]}}}}}
+    tf = trim_facts(fx)
+    assert list(tf["g"]) == ["Revenues"] and list(tf["g"]["Revenues"]) == ["EUR", "USD"]      # unit order kept
+    assert tf["g"]["Revenues"]["EUR"][0] == {"start": "2024-01-01", "end": "2024-12-31", "val": 5, "filed": "2025-03-01"}
+    assert tf["shares"] == [{"end": "2025-02-01", "val": 9, "filed": "2025-03-01"}]
+    junk = HIST_DIR / ("0" * 16 + ".json.gz")
+    HIST_DIR.mkdir(parents=True, exist_ok=True)
+    junk.write_bytes(gzip.compress(b'{"rec": {}}'))
+    before = dict(FAILED)
+    try:
+        assert load_history({"sha256": "0" * 64, "url": "https://other.example.com/h.json.gz"}) == {}
+        assert load_history({}) == {}
+    finally:
+        junk.unlink(missing_ok=True)
+        FAILED.clear()
+        FAILED.update(before)
+    try:
+        _SafeRedirect().redirect_request(urllib.request.Request("https://github.com/x"), None, 302, "", {}, "https://other.example.com/x")
+        raise AssertionError("followed a redirect off the allowlist")
+    except ValueError:
+        pass
+    # network allowlist: only SEC EDGAR, Yahoo Finance and the GitHub release over HTTPS
     for bad in ("http://www.sec.gov/x", "https://other.example.com/x", "ftp://www.sec.gov/x"):
         try:
             http_get(bad)
@@ -3192,7 +3397,7 @@ def selftest():
     assert p_up > 0.5 > p_in and st_["priced"]["n"] == 40, (p_up, p_in, st_)
     assert signal_p(tr, {"priced": "below"}, "d5", 0.4, conf, use=["priced"])[0] == 0.4
     assert signal_x({"bucket": "top", "mkt": {"vix": 25, "ipo_etf_20d": -0.01}}, 0.3) == {"priced": "inside", "ipo_etf": "down", "vix": ">=20", "open": OPEN_GROUPS[2]}
-    print("selftest: all checks passed (similarity, bootstrap, point-in-time filter, split adjustment, reference-level guard, verdicts, base-rate verdicts, parser, multi-class shares, calibration, archetypes, price categories, pricing Monte Carlo, pricing blend, signal steps, valuation, reference prices)")
+    print("selftest: all checks passed (history file, similarity, bootstrap, point-in-time filter, split adjustment, reference-level guard, verdicts, base-rate verdicts, parser, multi-class shares, calibration, archetypes, price categories, pricing Monte Carlo, pricing blend, signal steps, valuation, reference prices)")
 
 
 # ---------------------------------------------------------------- CLI
@@ -3230,14 +3435,19 @@ def main():
     p.add_argument("--all", action="store_true")
     p.add_argument("--json", action="store_true")
     sp.add_parser("clean")
+    sp.add_parser("bundle", help="maintainer: rebuild the shipped IPO history file")
     a = ap.parse_args()
     if a.cmd == "clean":
-        print(f"Removed {prune_cache(all_files=True)} cached files from {CACHE}")
+        n = sum(1 for f in HIST_DIR.glob("*.json.gz") if not f.unlink())
+        print(f"Removed {prune_cache(all_files=True)} cached files from {CACHE} and {n} history files from {HIST_DIR}")
         return
     pruned = prune_cache()
     log = (lambda *x: print(*x, file=sys.stderr)) if getattr(a, "json", False) else print
     if pruned:
         log(f"(cache: removed {pruned} files older than {CACHE_DAYS} days)")
+    if a.cmd == "bundle":
+        build_history(log)
+        return
     if a.cmd == "regress":
         sys.exit(0 if regress() else 1)
     if a.cmd == "forward":

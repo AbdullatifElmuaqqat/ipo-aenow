@@ -24,7 +24,8 @@ hand. Every number in the report must come from the script, a filing, or a page 
 | `analyze TICKER --as-of YYYY-MM-DD --mode pre-pricing\|at-open` | replays a past IPO point-in-time (pre-pricing hides the final prospectus; at-open allows the 424B4 filed up to 3 days later, whose terms were set the evening before); never logged |
 | `regress` | fixed regression set in `tests/regression.json`: S-1 parser vs 8 hand-read facts, verdict math on 30 frozen IPOs, 2020-25 scoreboard. Run before and after every change |
 | `forward` | scores the forward paper log (`trader/state/ipo-forward-log.jsonl`): every live `analyze` of an untraded IPO is logged, then checked once it trades |
-| `clean` | empties the cache (`%LOCALAPPDATA%\ipo-analyst\cache`, outside OneDrive) |
+| `clean` | empties the cache (`%LOCALAPPDATA%\ipo-analyst\cache`, outside OneDrive) and the history file |
+| `bundle` | maintainer only: rebuilds the shipped IPO history file, pins its SHA-256 in `ipo-config.json`, prints the `gh release` command |
 | `--selftest` | offline checks |
 
 Flags: `--json`, `--save` (writes `trader/reports/ipo-<TICKER>-<date>.md`), `--facts FILE`,
@@ -32,8 +33,10 @@ Flags: `--json`, `--save` (writes `trader/reports/ipo-<TICKER>-<date>.md`), `--f
 (order-book coverage, logged so it can be tested once a year of history exists), `--no-log`.
 A full `analyze` takes 1-4 minutes when the cache is warm (the decision table reads 10 years of deals).
 
-Archetype matching reads the cover page of every US IPO in the last 10 years the first time (often
-20-40 minutes); run it in the background and say so. Later runs use the 30-day cache. SEC needs
+Past IPOs' parsed records and trimmed XBRL facts come from the history file pinned in `ipo-config.json` (downloaded once, a few MB,
+checked by SHA-256), so a first run takes about as long as a later one. Without it (unpinned, or the check
+fails) the first run reads every US IPO's cover page from SEC (often 20-40 minutes); run it in the background
+and say so. SEC needs
 `sec_user_agent` in `trader/config.json`. If the script stops asking for an SEC contact, ask the user for their
 name and email and write that file at the path the error prints; never invent one.
 
@@ -205,10 +208,12 @@ End with: history, not a prediction; retail usually buys at the open; not financ
 
 - Tools it needs: Bash to run `python .claude/skills/ipo-aenow/scripts/ipo.py`, Read / Write for reports, and web
   search / fetch for the news step. No other tools, no installs, no dependencies beyond the Python standard library.
-- Network: HTTPS GET only, to `www.sec.gov`, `data.sec.gov`, `efts.sec.gov`, `query1/2.finance.yahoo.com`
-  (enforced in `http_get`; anything else is refused). Nothing about the user is sent except the SEC contact
+- Network: HTTPS GET only, to `www.sec.gov`, `data.sec.gov`, `efts.sec.gov`, `query1/2.finance.yahoo.com`, and
+  for the history file `github.com` / `objects.githubusercontent.com` / `release-assets.githubusercontent.com`
+  (enforced in `http_get` and on every redirect; anything else is refused). The history file is JSON data only,
+  used only if its SHA-256 matches the one pinned in `ipo-config.json`. Nothing about the user is sent except the SEC contact
   (`sec_user_agent`), which SEC requires in the User-Agent header and which goes to sec.gov hosts only.
-- Files written: the cache under `%LOCALAPPDATA%\ipo-analyst\cache`, and `trader/reports/`, `trader/state/`
+- Files written: the cache under `%LOCALAPPDATA%\ipo-analyst\cache` (history file in `..\history`), and `trader/reports/`, `trader/state/`
   (backtest results, forward log). No code is downloaded or executed; filings are parsed as text.
 
 ## Never

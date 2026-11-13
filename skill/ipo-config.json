@@ -215,5 +215,10 @@
       "d90",
       "d180"
     ]
+  },
+  "history": {
+    "url": "https://github.com/AbdullatifElmuaqqat/ipo-aenow/releases/download/history-2026-11-12/ipo-history.json.gz",
+    "sha256": "9699a4e32045d7a8f8e85cb2093191ec53a4a9729cfa2429df73311bd546dc0e",
+    "built": "2026-11-12"
   }
 }
